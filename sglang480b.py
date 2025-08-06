@@ -2,22 +2,24 @@ import subprocess
 import modal
 import modal.experimental
 
-sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.9.post2-cu126").pip_install("httpx")
+sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.9.post2-cu126").env({"MODAL_LOGLEVEL": "DEBUG"})
 
 app = modal.App("qwen3-coder-480b-sglang")
 
 model_volume = modal.Volume.from_name("qwen3-coder-models", create_if_missing=True)
 
-def wait_for_port(process: subprocess.Popen, port: int):
-    import socket
+PORT = 8000
 
-    while True:
-        try:
-            with socket.create_connection(("localhost", port), timeout=1):
-                break
-        except (ConnectionRefusedError, OSError):
-            if process.poll() is not None:
-                raise Exception(f"Process {process.pid} exited with code {process.returncode}")
+# def wait_for_port(process: subprocess.Popen, port: int):
+#     import socket
+
+#     while True:
+#         try:
+#             with socket.create_connection(("10.100.0.1", port), timeout=1):
+#                 break
+#         except (ConnectionRefusedError, OSError):
+#             if process.poll() is not None:
+#                 raise Exception(f"Process {process.pid} exited with code {process.returncode}")
 
 @app.cls(
     image=sglang_image,
@@ -32,30 +34,30 @@ def wait_for_port(process: subprocess.Popen, port: int):
 class Model:
     @modal.enter()
     def enter(self):
-        import httpx
         cluster_info = modal.experimental.get_cluster_info()
         container_rank = cluster_info.rank
-        first_node_hostname = "10.100.0.1"
-        port = 8000
 
         serve_params = {
             # Read from volume with fine-tuned model weights
             "model-path": "/model_storage/qwen3-coder-480b-a35b-instruct",
             "nnodes": 2, 
             "node-rank": container_rank,
-            "dist-init-addr": f"{first_node_hostname}:{port}",
+            "dist-init-addr": f"10.100.0.1:{PORT}",
             "tp": 8,
             "pp": 2,
+            "disable-cuda-graph": "",
         }
         serve_cmd = "python -m sglang.launch_server " + " ".join([f"--{k} {v}" for k, v in serve_params.items()])
 
         self.serve_process = subprocess.Popen(serve_cmd, shell=True)
-        wait_for_port(self.serve_process, 8000)
-        print("SGLang server is ready!")
+        if container_rank == 1: # dummy server to expose the port
+            subprocess.Popen(
+                ["python", "-m", "http.server", str(PORT)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
-        self.httpx_client = httpx.Client()
-
-    @modal.web_server(8000)
+    @modal.web_server(PORT, startup_timeout=86400)
     def serve(self):
         return
 

@@ -1,7 +1,7 @@
 import subprocess
 import modal
 
-sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.9.post2-cu126").pip_install("httpx")
+sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.9.post2-cu126")
 
 app = modal.App("qwen3-coder-30b-sglang")
 
@@ -31,7 +31,6 @@ def wait_for_port(process: subprocess.Popen, port: int):
 class Model:
     @modal.enter()
     def enter(self):
-        import httpx
 
         serve_params = {
             "host": "0.0.0.0",
@@ -48,8 +47,6 @@ class Model:
         self.serve_process = subprocess.Popen(serve_cmd, shell=True)
         wait_for_port(self.serve_process, 8000)
         print("SGLang server is ready!")
-
-        self.httpx_client = httpx.Client()
 
     @modal.web_server(8000)
     def serve(self):

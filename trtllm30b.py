@@ -19,7 +19,6 @@ tensorrt_image = tensorrt_image.apt_install(
     "numpy",
     "pynvml",  # avoid breaking change to pynvml version API
     "flashinfer-python",
-    "httpx",
     pre=True,
     extra_index_url="https://pypi.nvidia.com",
     gpu="h200",
@@ -63,8 +62,6 @@ class Model:
         wait_for_port(self.serve_process, 8000)
         print("TRT-LLM server is ready!")
 
-        self.httpx_client = httpx.Client()        
-
     @modal.web_server(8000)
     def serve(self):
         return
@@ -83,3 +80,13 @@ class Model:
     def exit(self):
         self.serve_process.terminate()
         print("TRT-LLM server is stopped!")
+
+#  curl -X POST https://modal-labs-advay-dev--qwen3-coder-30b-trt-llm-model-serve.modal.run/v1/chat/completions \
+#   -H 'Content-Type: application/json' \
+#   -d '{
+#     "messages": [
+#       { "role": "user", "content": "Write a quick sort algorithm." }
+#     ], 
+#     "model": "dummy",
+#     "temperature": 0.7
+#   }'
