@@ -2,24 +2,14 @@ import subprocess
 import modal
 import modal.experimental
 
-sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.9.post2-cu126").env({"MODAL_LOGLEVEL": "DEBUG"})
+sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.10.post2-cu126")
 
 app = modal.App("qwen3-coder-480b-sglang")
 
 model_volume = modal.Volume.from_name("qwen3-coder-models", create_if_missing=True)
 
-PORT = 8000
-
-# def wait_for_port(process: subprocess.Popen, port: int):
-#     import socket
-
-#     while True:
-#         try:
-#             with socket.create_connection(("10.100.0.1", port), timeout=1):
-#                 break
-#         except (ConnectionRefusedError, OSError):
-#             if process.poll() is not None:
-#                 raise Exception(f"Process {process.pid} exited with code {process.returncode}")
+SGLANG_PORT = 30000
+MULTINODE_PORT = 5000
 
 @app.cls(
     image=sglang_image,
@@ -29,6 +19,7 @@ PORT = 8000
     },
     min_containers=1,
     timeout=86400,
+    experimental_options={"flash": "us-east"},
 )
 @modal.experimental.clustered(size=2, rdma=True)
 class Model:
@@ -42,46 +33,30 @@ class Model:
             "model-path": "/model_storage/qwen3-coder-480b-a35b-instruct",
             "nnodes": 2, 
             "node-rank": container_rank,
-            "dist-init-addr": f"10.100.0.1:{PORT}",
+            "dist-init-addr": f"10.100.0.1:{MULTINODE_PORT}",
             "tp": 8,
             "pp": 2,
-            "disable-cuda-graph": "",
+            "port": SGLANG_PORT,
+            "host": "0.0.0.0",
         }
         serve_cmd = "python -m sglang.launch_server " + " ".join([f"--{k} {v}" for k, v in serve_params.items()])
 
         self.serve_process = subprocess.Popen(serve_cmd, shell=True)
-        if container_rank == 1: # dummy server to expose the port
-            subprocess.Popen(
-                ["python", "-m", "http.server", str(PORT)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-    @modal.web_server(PORT, startup_timeout=86400)
-    def serve(self):
-        return
-
-    # @modal.method()
-    # def inference(self, json: dict, timeout: float = 4.0):
-    #     response = self.httpx_client.post(
-    #         "http://localhost:8000/v1/chat/completions",
-    #         json=json,
-    #         timeout=timeout,
-    #     )
-    #     return response.json()
+        if container_rank == 0:
+            self.flash_handle = modal.experimental.flash_forward(SGLANG_PORT)
 
     @modal.exit()
     def exit(self):
+        print("Stopping SGLang server")
         self.serve_process.terminate()
-        print("SGLang server is stopped!")
 
+        cluster_info = modal.experimental.get_cluster_info()
+        container_rank = cluster_info.rank
+        if container_rank == 0:
+            print("Stopping flash handle")
+            self.flash_handle.stop()
 
-#  curl -X POST https://modal-labs-advay-dev--qwen3-coder-30b-sglang-model-serve.modal.run/v1/chat/completions \
-#   -H 'Content-Type: application/json' \
-#   -d '{
-#     "messages": [
-#       { "role": "user", "content": "Write a quick sort algorithm." }
-#     ], 
-#     "model": "dummy",
-#     "temperature": 0.7
-#   }'
+            print("Waiting 5 seconds to finish requests")
+
+            print("Closing flash handle")
+            self.flash_handle.close()

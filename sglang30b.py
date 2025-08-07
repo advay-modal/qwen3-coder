@@ -1,22 +1,12 @@
 import subprocess
 import modal
+import modal.experimental
 
 sglang_image = modal.Image.from_registry("lmsysorg/sglang:v0.4.9.post2-cu126")
 
 app = modal.App("qwen3-coder-30b-sglang")
 
 model_volume = modal.Volume.from_name("qwen3-coder-models", create_if_missing=True)
-
-def wait_for_port(process: subprocess.Popen, port: int):
-    import socket
-
-    while True:
-        try:
-            with socket.create_connection(("localhost", port), timeout=1):
-                break
-        except (ConnectionRefusedError, OSError):
-            if process.poll() is not None:
-                raise Exception(f"Process {process.pid} exited with code {process.returncode}")
 
 @app.cls(
     image=sglang_image,
@@ -25,9 +15,8 @@ def wait_for_port(process: subprocess.Popen, port: int):
         "/model_storage": model_volume,
     },
     min_containers=1,
+    experimental_options={"flash": "us-east"},
 )
-# Scale for 5 concurrent requests, allow up to 9.
-@modal.concurrent(max_inputs=9, target_inputs=5)
 class Model:
     @modal.enter()
     def enter(self):
@@ -45,27 +34,20 @@ class Model:
         serve_cmd = "python -m sglang.launch_server " + " ".join([f"--{k} {v}" for k, v in serve_params.items()])
 
         self.serve_process = subprocess.Popen(serve_cmd, shell=True)
-        wait_for_port(self.serve_process, 8000)
-        print("SGLang server is ready!")
-
-    @modal.web_server(8000)
-    def serve(self):
-        return
-
-    @modal.method()
-    def inference(self, json: dict, timeout: float = 4.0):
-        # Adding this call-pattern - it's a faster path for requests.
-        response = self.httpx_client.post(
-            "http://localhost:8000/v1/chat/completions",
-            json=json,
-            timeout=timeout,
-        )
-        return response.json()
+        self.flash_handle = modal.experimental.flash_forward(8000)
 
     @modal.exit()
     def exit(self):
+        print("Stopping SGLang server")
         self.serve_process.terminate()
-        print("SGLang server is stopped!")
+
+        print("Stopping flash handle")
+        self.flash_handle.stop()
+
+        print("Waiting 5 seconds to finish requests")
+
+        print("Closing flash handle")
+        self.flash_handle.close()
 
 
 #  curl -X POST https://modal-labs-advay-dev--qwen3-coder-30b-sglang-model-serve.modal.run/v1/chat/completions \
