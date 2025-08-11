@@ -1,6 +1,6 @@
 import subprocess
 import modal
-import os
+import modal.experimental
 
 QWEN3_CODER_30B_MODEL_PATH = "/model_storage/qwen3-coder-30b"
 
@@ -19,21 +19,11 @@ tensorrt_image = tensorrt_image.apt_install(
     "numpy",
     "pynvml",  # avoid breaking change to pynvml version API
     "flashinfer-python",
+    "cuda-python==12.8.0",
     pre=True,
     extra_index_url="https://pypi.nvidia.com",
     gpu="h200",
 )
-
-def wait_for_port(process: subprocess.Popen, port: int):
-    import socket
-
-    while True:
-        try:
-            with socket.create_connection(("localhost", port), timeout=1):
-                break
-        except (ConnectionRefusedError, OSError):
-            if process.poll() is not None:
-                raise Exception(f"Process {process.pid} exited with code {process.returncode}")
 
 @app.cls(
     image=tensorrt_image,
@@ -42,44 +32,33 @@ def wait_for_port(process: subprocess.Popen, port: int):
         "/model_storage": model_volume,
     },
     min_containers=1,  # Warm container
+    experimental_options={"flash": "us-east"},
 )
-# Scale for 5 concurrent requests, allow up to 9.
-@modal.concurrent(max_inputs=9, target_inputs=5)
 class Model:
     
     @modal.enter()
-    def enter(self):
-        import httpx
-        
+    def enter(self):        
         serve_params = {
             "host": "0.0.0.0",
             "port": 8000,
             "tp_size": 4,
         }
-
         serve_cmd = "trtllm-serve serve /model_storage/qwen3-coder-30b-a3b-instruct " + " ".join([f"--{k} {v}" for k, v in serve_params.items()])
         self.serve_process = subprocess.Popen(serve_cmd, shell=True)
-        wait_for_port(self.serve_process, 8000)
-        print("TRT-LLM server is ready!")
-
-    @modal.web_server(8000)
-    def serve(self):
-        return
-
-    @modal.method()
-    def inference(self, json: dict, timeout: float = 4.0):
-        # Adding this call-pattern - it's a faster path for requests.
-        response = self.httpx_client.post(
-            "http://localhost:8000/v1/chat/completions",
-            json=json,
-            timeout=timeout,
-        )
-        return response.json()
+        self.flash_handle = modal.experimental.flash_forward(8000)
 
     @modal.exit()
     def exit(self):
+        print("Stopping TRT-LLM server")
         self.serve_process.terminate()
-        print("TRT-LLM server is stopped!")
+
+        print("Stopping flash handle")
+        self.flash_handle.stop()
+
+        print("Waiting 5 seconds to finish requests")
+
+        print("Closing flash handle")
+        self.flash_handle.close()
 
 #  curl -X POST https://modal-labs-advay-dev--qwen3-coder-30b-trt-llm-model-serve.modal.run/v1/chat/completions \
 #   -H 'Content-Type: application/json' \
