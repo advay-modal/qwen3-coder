@@ -60,3 +60,13 @@ class Model:
 
             print("Closing flash handle")
             self.flash_handle.close()
+
+# curl -v -X POST https://modal-labs-advay-dev--qwen3-coder-480b-sglang-model.us-east.modal.direct/v1/chat/completions \
+#   -H 'Content-Type: application/json' \
+#   -d '{
+#     "messages": [
+#       { "role": "user", "content": "Write a quick sort algorithm." }
+#     ],
+#     "model": "dummy",
+#     "temperature": 0.7
+#   }'            
